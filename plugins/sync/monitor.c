@@ -1,111 +1,53 @@
 #include "monitor.h"
-#include <sys/resource.h>
-#include <sys/time.h>
-#include <sys/sysinfo.h>
+#include <stdlib.h>
 
-static monitor_config_t g_config;
-static plugin_thread_t g_monitor_thread;
-static monitor_data_t g_latest_data;
-static monitor_callback_t g_callback = NULL;
-static int g_running = 0;
-
-// Monitor thread function
-static void* monitor_thread_func(void *arg) {
-    (void)arg; // Unused parameter
+int monitor_init(monitor_t* monitor) {
     
-    while (g_running) {
-        // Collect system metrics
-        struct rusage usage;
-        if (getrusage(RUSAGE_SELF, &usage) == 0) {
-            g_latest_data.cpu_usage = (double)usage.ru_utime.tv_sec + 
-                                     (double)usage.ru_utime.tv_usec / 1000000.0;
-        }
-        
-        // Get memory usage (simplified)
-        struct sysinfo info;
-        if (sysinfo(&info) == 0) {
-            g_latest_data.memory_usage = (double)(info.totalram - info.freeram) / 
-                                        (double)info.totalram * 100.0;
-        }
-        
-        g_latest_data.active_threads = 1; // Simplified
-        g_latest_data.timestamp = time(NULL);
-        
-        // Call callback if set
-        if (g_callback != NULL) {
-            g_callback(&g_latest_data);
-        }
-        
-        plugin_log("Monitor: CPU=%.2f%%, Memory=%.2f%%, Threads=%d", 
-                  g_latest_data.cpu_usage, g_latest_data.memory_usage, 
-                  g_latest_data.active_threads);
-        
-        plugin_sleep_ms(g_config.interval_ms);
+    // Check for null pointer
+    if (!monitor){
+        return -1; 
+    }
+
+    // Mutex initialization failed
+    if (pthread_mutex_init(&monitor->mutex, NULL) != 0){
+        return -1; 
+    }
+
+    // Condition variable initialization failed
+    if (pthread_cond_init(&monitor->condition, NULL) != 0) {
+        return -1;
     }
     
-    return NULL;
+    monitor->signaled = 0;
+    return 0; // on success
 }
 
-int monitor_init(monitor_config_t *config) {
-    if (config == NULL) {
-        return PLUGIN_INVALID_PARAM;
+void monitor_destroy(monitor_t* monitor) {
+    pthread_mutex_destroy(&monitor->mutex);// destroy mutex
+    pthread_cond_destroy(&monitor->condition); // destroy condition variable
+}
+
+void monitor_signal(monitor_t* monitor) {
+    pthread_mutex_lock(&monitor->mutex);
+    monitor->signaled = 1;
+    pthread_cond_broadcast(&monitor->condition);  // waking up waiting threads
+    pthread_mutex_unlock(&monitor->mutex);
+}
+
+void monitor_reset(monitor_t* monitor) {
+    pthread_mutex_lock(&monitor->mutex);
+    monitor->signaled = 0;
+    pthread_mutex_unlock(&monitor->mutex);
+}
+
+int monitor_wait(monitor_t* monitor) {
+    pthread_mutex_lock(&monitor->mutex);
+
+    // loops until signaled
+    while (!monitor->signaled) {              
+        pthread_cond_wait(&monitor->condition, &monitor->mutex);
     }
     
-    g_config = *config;
-    g_running = 0;
-    
-    plugin_log("Monitor plugin initialized with interval=%dms", config->interval_ms);
-    return PLUGIN_SUCCESS;
-}
-
-int monitor_start(void) {
-    if (g_running) {
-        return PLUGIN_ERROR;
-    }
-    
-    g_running = 1;
-    if (create_plugin_thread(&g_monitor_thread, monitor_thread_func, NULL) != PLUGIN_SUCCESS) {
-        g_running = 0;
-        return PLUGIN_ERROR;
-    }
-    
-    plugin_log("Monitor plugin started");
-    return PLUGIN_SUCCESS;
-}
-
-int monitor_stop(void) {
-    if (!g_running) {
-        return PLUGIN_ERROR;
-    }
-    
-    g_running = 0;
-    stop_plugin_thread(&g_monitor_thread);
-    
-    plugin_log("Monitor plugin stopped");
-    return PLUGIN_SUCCESS;
-}
-
-void monitor_cleanup(void) {
-    if (g_running) {
-        monitor_stop();
-    }
-    plugin_log("Monitor plugin cleaned up");
-}
-
-monitor_data_t* monitor_get_latest_data(void) {
-    return &g_latest_data;
-}
-
-int monitor_get_data_history(monitor_data_t *buffer, int max_count) {
-    if (buffer == NULL || max_count <= 0) {
-        return PLUGIN_INVALID_PARAM;
-    }
-    
-    // Simplified - just return current data
-    buffer[0] = g_latest_data;
-    return 1;
-}
-
-void monitor_set_callback(monitor_callback_t callback) {
-    g_callback = callback;
+    pthread_mutex_unlock(&monitor->mutex);
+    return 0;
 }
