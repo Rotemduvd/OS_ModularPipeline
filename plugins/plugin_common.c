@@ -1,55 +1,104 @@
 #include "plugin_common.h"
-#include <stdarg.h>
-#include <time.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-void plugin_log(const char *format, ...) {
-    time_t now;
-    struct tm *tm_info;
-    char time_str[26];
-    
-    time(&now);
-    tm_info = localtime(&now);
-    strftime(time_str, 26, "%Y-%m-%d %H:%M:%S", tm_info);
-    
-    printf("[%s] ", time_str);
-    
-    va_list args;
-    va_start(args, format);
-    vprintf(format, args);
-    va_end(args);
-    printf("\n");
+static plugin_context_t pg; // single plugin context
+
+// generic consumer thread
+void* plugin_consumer_thread(void* arg) {
+    plugin_context_t* c = (plugin_context_t*)arg;
+    while (1) {
+        char* item = consumer_producer_get(c->queue); // get next item
+        if (!item) break; // finished signal
+
+        if (strcmp(item, "<END>") == 0) { // check end signal
+            free(item);
+            if (c->next_place_work) c->next_place_work("<END>");
+            consumer_producer_signal_finished(c->queue);
+            c->finished = 1;
+            break;
+        }
+
+        const char* processed = c->process_function(item); // process item
+        free(item); // free original string
+
+        if (c->next_place_work && processed) {
+            c->next_place_work(processed); // send to next plugin
+        }
+    }
+    return NULL;
 }
 
-int plugin_validate_params(void *params, size_t size) {
-    if (params == NULL || size == 0) {
-        return PLUGIN_INVALID_PARAM;
-    }
-    return PLUGIN_SUCCESS;
+// log error
+void log_error(plugin_context_t* c, const char* msg) {
+    if (!c || !msg) return;
+    printf("[ERROR][%s] - %s\n", c->name, msg);
 }
 
-void plugin_sleep_ms(int milliseconds) {
-    usleep(milliseconds * 1000);
+// log info
+void log_info(plugin_context_t* c, const char* msg) {
+    if (!c || !msg) return;
+    printf("[INFO][%s] - %s\n", c->name, msg);
 }
 
-int create_plugin_thread(plugin_thread_t *thread, void *(*func)(void *), void *arg) {
-    if (thread == NULL || func == NULL) {
-        return PLUGIN_ERROR;
-    }
-    
-    thread->func = func;
-    thread->arg = arg;
-    thread->running = 1;
-    
-    if (pthread_create(&thread->thread, NULL, func, arg) != 0) {
-        return PLUGIN_ERROR;
-    }
-    
-    return PLUGIN_SUCCESS;
+// get plugin name
+const char* plugin_get_name(void) {
+    return pg.name;
 }
 
-void stop_plugin_thread(plugin_thread_t *thread) {
-    if (thread != NULL) {
-        thread->running = 0;
-        pthread_join(thread->thread, NULL);
+// init common plugin
+const char* common_plugin_init(const char* (*proc)(const char*), const char* name, int queue_size) {
+    if (!proc || !name || queue_size <= 0) return "invalid args";
+
+    pg.name = name;
+    pg.process_function = proc;
+    pg.initialized = 0;
+    pg.finished = 0;
+
+    pg.queue = (consumer_producer_t*)malloc(sizeof(consumer_producer_t));
+    if (!pg.queue) return "malloc failed";
+
+    const char* err = consumer_producer_init(pg.queue, queue_size);
+    if (err) return err;
+
+    if (pthread_create(&pg.consumer_thread, NULL, plugin_consumer_thread, &pg) != 0) {
+        return "thread create failed";
     }
+
+    pg.initialized = 1;
+    return NULL;
+}
+
+// plugin init wrapper
+const char* plugin_init(int queue_size) {
+    return common_plugin_init(NULL, NULL, queue_size); // plugins replace this with real init
+}
+
+// finalize plugin
+const char* plugin_fini(void) {
+    if (!pg.initialized) return "not initialized";
+    pthread_join(pg.consumer_thread, NULL); // wait for thread
+    consumer_producer_destroy(pg.queue); // destroy queue
+    free(pg.queue); // free struct
+    pg.initialized = 0;
+    return NULL;
+}
+
+// place work
+const char* plugin_place_work(const char* str) {
+    if (!pg.initialized) return "not initialized";
+    return consumer_producer_put(pg.queue, str);
+}
+
+// attach next plugin
+void plugin_attach(const char* (*next)(const char*)) {
+    pg.next_place_work = next;
+}
+
+// wait for finish
+const char* plugin_wait_finished(void) {
+    if (!pg.initialized) return "not initialized";
+    consumer_producer_wait_finished(pg.queue);
+    return NULL;
 }
