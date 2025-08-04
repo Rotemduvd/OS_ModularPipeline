@@ -48,12 +48,13 @@ void log_info(plugin_context_t* c, const char* msg) {
     if (!c || !msg) return;
     printf("[INFO][%s] - %s\n", c->name, msg);
 }
-
+/*
 // get plugin name
 const char* plugin_get_name(void) {
     return pg.name;
 }
 
+*/
 // init common plugin
 const char* common_plugin_init(const char* (*proc)(const char*), const char* name, int queue_size) {
     if (!proc || !name || queue_size <= 0) return "args are invalid";
@@ -81,10 +82,12 @@ const char* common_plugin_init(const char* (*proc)(const char*), const char* nam
     return NULL;
 }
 
+/*
 // plugin init 
 const char* plugin_init(int queue_size) {
     return common_plugin_init(NULL, NULL, queue_size); // each plugin will implement its init
 }
+*/
 
 // finalize plugin
 const char* plugin_fini(void) {

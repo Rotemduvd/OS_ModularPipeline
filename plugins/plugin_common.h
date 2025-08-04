@@ -2,7 +2,7 @@
 #define PLUGIN_COMMON_H
 
 #include <pthread.h>
-#include "consumer_producer.h"
+#include "sync/consumer_producer.h"
 
 /**
  * Common SDK structures and functions for plugin implementation
