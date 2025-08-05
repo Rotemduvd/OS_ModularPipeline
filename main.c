@@ -43,21 +43,22 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // parse queue size
-    int queue_size = atoi(argv[1]);
-    if (queue_size <= 0) {
+    // parse queue size with validation
+    char* endptr;
+    long queue_size = strtol(argv[1], &endptr, 10);
+    if (*endptr != '\0' || queue_size <= 0) {
         fprintf(stderr, "error- not a valid queue size\n");
         print_usage();
         return 1;
     }
-
+    
     int plugin_count = argc - 2;
     plugin_handle_t plugins[MAX_PLUGINS];
 
     // load plugins
     for (int i = 0; i < plugin_count; i++) {
         char filename[256];
-        snprintf(filename, sizeof(filename), "./output/plugins/%s.so", argv[i + 2]); // build so path
+        snprintf(filename, sizeof(filename), "output/plugins/%s.so", argv[i + 2]); // build so path
 
         plugins[i].handle = dlopen(filename, RTLD_NOW | RTLD_LOCAL);
         if (!plugins[i].handle) {
