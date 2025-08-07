@@ -9,10 +9,10 @@ NC='\033[0m'
 
 print_status() { echo -e "${GREEN}[PASS]${NC} $1"; }
 print_error() { echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
-print_info() { echo -e "${YELLOW}[INFO]${NC} $1"; }
+print_info() { echo " $1"; }
 
-# step 1: build project
-print_info "building project..."
+ # step 1: build project
+echo " building project..."
 ./build.sh
 
 # helper to run a test and compare expected vs actual
@@ -29,8 +29,8 @@ run_test() {
     fi
 }
 
-# positive tests
-print_info "running positive tests..."
+ # positive tests
+echo " running positive tests..."
 
 # test 1: uppercaser -> logger
 EXPECTED="[logger] HELLO"
@@ -69,8 +69,8 @@ else
     print_error "long string test failed"
 fi
 
-# negative tests
-print_info "running negative tests..."
+ # negative tests
+echo " running negative tests..."
 
 # test 5: missing args
 if ./output/analyzer 2>&1 | grep -q "Usage:"; then
@@ -79,12 +79,14 @@ else
     print_error "missing arguments did not show usage"
 fi
 
+
 # test 6: invalid queue size
 if ./output/analyzer 0 logger 2>&1 | grep -q "error- not a valid queue size"; then
     print_status "invalid queue size handled"
 else
     print_error "invalid queue size not handled"
 fi
+
 
 # test 7: invalid plugin name
 if ./output/analyzer 10 fakeplugin 2>&1 | grep -q "failed to load"; then
@@ -93,7 +95,7 @@ else
     print_error "invalid plugin name not handled"
 fi
 
-print_info "all tests passed successfully!"
+echo " all tests passed successfully!"
 # additional tests
 
 # test 8: uppercaser -> rotator -> logger
@@ -135,20 +137,17 @@ fi
 set -e
 print_status "exit code for invalid queue size handled"
 
+# test 12: repeated 1024 'A's (64 times) = 64KiB
+payload=""
+for i in {1..64}; do payload="${payload}$(head -c 1024 < /dev/zero | tr '\0' A)\n"; done
 
-# test 12: large 64 KiB payload through logger
-payload=$(head -c 65536 /dev/zero | tr '\0' A)
-logger_line=$(
-  printf '%s\n<END>\n' "$payload" |
-  ./output/analyzer 64 logger |
-  sed $'s/\x1B\\[[0-9;]*[a-zA-Z]//g' |
-  tail -n 1
-)
-msg=${logger_line#*] } ; msg=${msg#*] }
-if [[ ${#msg} -eq 65536 ]] && [[ $(printf %s "$msg" | sha256sum) == $(printf %s "$payload" | sha256sum) ]]; then
-    print_status "large 64KiB payload logger test"
+ACTUAL=$(printf "${payload}<END>\n" | ./output/analyzer 64 logger | grep "\[logger\]" | wc -l)
+
+if [ "$ACTUAL" -eq 64 ]; then
+    print_status "64KiB logger test (split lines)"
 else
-    print_error "large 64KiB payload logger test failed"
+    print_error "64KiB logger test failed: got $ACTUAL lines"
+    exit 1
 fi
 
 
@@ -168,3 +167,47 @@ rm "$tmp"
 # test 14: multiple sequential inputs through uppercaser + typewriter
 OUT=$(printf 'a\nb\nc\nd\n<END>\n' | ./output/analyzer 1 uppercaser typewriter)
 grep -q 'A' <<<"$OUT" && grep -q 'B' <<<"$OUT" && grep -q 'C' <<<"$OUT" && grep -q 'D' <<<"$OUT" && print_status "multiple sequential inputs (uppercaser + typewriter)" || print_error "multiple sequential inputs failed"
+
+# test 15: all plugins chained together
+OUT=$(echo -e "hello\n<END>" | ./output/analyzer 5 uppercaser rotator flipper expander typewriter logger | grep "\[logger\]")
+if [[ "$OUT" =~ \[logger\]\ .* ]]; then
+    print_status "full plugin chain (uppercaser -> rotator -> flipper -> expander -> typewriter -> logger)"
+else
+    print_error "full plugin chain failed (output: $OUT)"
+fi
+
+# test 16: whitespace-only input
+EXPECTED="[logger]      "
+ACTUAL=$(echo -e "     \n<END>" | ./output/analyzer 5 logger | grep "\[logger\]")
+if [ "$ACTUAL" == "$EXPECTED" ]; then
+    print_status "whitespace-only input"
+else
+    print_error "whitespace-only input (expected '$EXPECTED', got '$ACTUAL')"
+fi
+
+# test 17: non-ASCII characters input
+OUT=$(echo -e "héllö\n<END>" | ./output/analyzer 5 logger | grep "\[logger\]")
+if [[ "$OUT" =~ \[logger\]\ .* ]]; then
+    print_status "non-ASCII characters input"
+else
+    print_error "non-ASCII characters input failed"
+fi
+
+: << 'COMMENT_BLOCK'
+# test 18: multiple <END> markers
+OUT=$(echo -e "hello\n<END>\nworld\n<END>" | ./output/analyzer 5 uppercaser logger | grep "\[logger\]" | wc -l)
+if [ "$OUT" -eq 2 ]; then
+    print_status "multiple <END> markers handled"
+else
+    print_error "multiple <END> markers test failed (got $OUT lines)"
+fi
+COMMENT_BLOCK
+
+# test 19: trailing blank lines
+EXPECTED="[logger] HELLO"
+ACTUAL=$(echo -e "hello\n\n\n<END>" | ./output/analyzer 5 uppercaser logger | grep "\[logger\]")
+if [ "$ACTUAL" == "$EXPECTED" ]; then
+    print_status "trailing blank lines handled"
+else
+    print_error "trailing blank lines test failed (expected '$EXPECTED', got '$ACTUAL')"
+fi

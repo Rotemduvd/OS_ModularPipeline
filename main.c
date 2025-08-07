@@ -7,7 +7,6 @@
 #define MAX_PLUGINS 10
 #define MAX_LINE 1024
 
-// struct to store plugin handles and functions
 typedef struct {
     const char* (*init)(int);
     const char* (*fini)(void);
@@ -18,7 +17,7 @@ typedef struct {
     void* handle;
 } plugin_handle_t;
 
-// print usage help
+// print the usage help
 void print_usage() {
     printf("Usage: ./analyzer <queue_size> <plugin1> <plugin2> ... <pluginN>\n");
     printf("Arguments:\n");
@@ -36,7 +35,7 @@ void print_usage() {
 }
 
 int main(int argc, char* argv[]) {
-    // check args
+    // check if there are enough args
     if (argc < 3) {
         fprintf(stderr, "error- there are missing arguments\n");
         print_usage();
@@ -46,13 +45,22 @@ int main(int argc, char* argv[]) {
     // parse queue size with validation
     char* endptr;
     long queue_size = strtol(argv[1], &endptr, 10);
-    if (*endptr != '\0' || queue_size <= 0) {
+
+    // if theres invalid characters return error
+    if (*endptr != '\0') { 
+        fprintf(stderr, "error- queue size not a number\n");
+        print_usage();
+        return 1;
+    }
+
+    // if negative or zero return error
+    if (queue_size <= 0) { 
         fprintf(stderr, "error- not a valid queue size\n");
         print_usage();
         return 1;
     }
     
-    int plugin_count = argc - 2;
+    int plugin_count = argc - 2; // number of plugins specified
     plugin_handle_t plugins[MAX_PLUGINS];
 
     // load plugins
@@ -60,14 +68,14 @@ int main(int argc, char* argv[]) {
         char filename[256];
         snprintf(filename, sizeof(filename), "output/plugins/%s.so", argv[i + 2]); // build so path
 
-        plugins[i].handle = dlopen(filename, RTLD_NOW | RTLD_LOCAL);
+        plugins[i].handle = dlopen(filename, RTLD_NOW | RTLD_LOCAL); 
         if (!plugins[i].handle) {
             fprintf(stderr, "error- failed to load %s: %s\n", filename, dlerror());
             print_usage();
             return 1;
         }
 
-        // resolve functions
+        // resolve the functions of each plugin 
         plugins[i].init = dlsym(plugins[i].handle, "plugin_init");
         plugins[i].fini = dlsym(plugins[i].handle, "plugin_fini");
         plugins[i].place_work = dlsym(plugins[i].handle, "plugin_place_work");
@@ -75,6 +83,7 @@ int main(int argc, char* argv[]) {
         plugins[i].wait_finished = dlsym(plugins[i].handle, "plugin_wait_finished");
         plugins[i].get_name = dlsym(plugins[i].handle, "plugin_get_name");
 
+        // check if all functions are resolved
         if (!plugins[i].init || !plugins[i].fini || !plugins[i].place_work || !plugins[i].attach || !plugins[i].wait_finished || !plugins[i].get_name) {
             fprintf(stderr, "error- missing function in plugin %s\n", filename);
             print_usage();
@@ -82,12 +91,12 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // init plugins
+    // initialaize the plugins
     for (int i = 0; i < plugin_count; i++) {
         const char* err = plugins[i].init(queue_size);
+        // if a plugin fails to initialize, print error and clean
         if (err) {
             fprintf(stderr, "error- failed to init plugin %s: %s\n", plugins[i].get_name(), err);
-            // cleanup loaded plugins so far
             for (int j = 0; j <= i; j++) {
                 dlclose(plugins[j].handle);
             }
@@ -95,25 +104,25 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // attach plugins in pipeline
+    // attach the plugins to each other
     for (int i = 0; i < plugin_count - 1; i++) {
         plugins[i].attach(plugins[i + 1].place_work);
     }
 
     // read input from stdin
     char line[MAX_LINE];
+
+    // while there is input, read it line by line
     while (fgets(line, sizeof(line), stdin)) {
         line[strcspn(line, "\n")] = '\0'; // strip newline
-
-        if (strcmp(line, "<END>") == 0) {
+        if (strcmp(line, "<END>") == 0) { // if "<END>" is received, signal all plugins to finish
             plugins[0].place_work("<END>");
             break;
         }
-
         plugins[0].place_work(line); // send to first plugin
     }
 
-    // wait for plugins to finish
+    // wait for all plugins to finish
     for (int i = 0; i < plugin_count; i++) {
         plugins[i].wait_finished();
     }
